@@ -1009,11 +1009,11 @@ class Scheduler(object):
 
         # Did the schedule change in a way that will affect task scheduling?
         if schedule.schedule_type in [Schedule.Type.INTERVAL, Schedule.Type.TIMED] and (
-                                is_new_schedule or
-                                    prev_schedule_row.time != schedule_row.time or
-                                prev_schedule_row.day != schedule_row.day or
-                            prev_schedule_row.repeat_seconds != schedule_row.repeat_seconds or
-                        prev_schedule_row.exclusive != schedule_row.exclusive):
+                is_new_schedule or
+                prev_schedule_row.time != schedule_row.time or
+                prev_schedule_row.day != schedule_row.day or
+                prev_schedule_row.repeat_seconds != schedule_row.repeat_seconds or
+                prev_schedule_row.exclusive != schedule_row.exclusive):
             now = self.current_time if self.current_time else time.time()
             self._schedule_first_task(schedule_row, now)
             self._resume_check_schedules()

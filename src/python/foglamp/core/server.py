@@ -35,7 +35,7 @@ _STORAGE_DIR = os.path.expanduser(_FOGLAMP_ROOT + '/services/storage')
 class Server:
     """ FOGLamp core server.
 
-     Starts the FogLAMP REST server, storage and _scheduler
+     Starts the FogLAMP REST server, storage and scheduler
     """
 
     scheduler = None
@@ -69,8 +69,8 @@ class Server:
 
     @classmethod
     async def _start_scheduler(cls):
-        """Starts the _scheduler"""
-        _logger.info("start _scheduler")
+        """Starts the scheduler"""
+        _logger.info("start scheduler")
         cls.scheduler = Scheduler(cls._host, cls.core_management_port)
         await cls.scheduler.start()
 
@@ -116,9 +116,9 @@ class Server:
 
             # start storage
             loop.run_until_complete(cls._start_storage(loop))
-            # start _scheduler
-            # see _scheduler.py start def FIXME
-            # _scheduler on start will wait for storage service registration
+            # start scheduler
+            # see scheduler.py start def FIXME
+            # scheduler on start will wait for storage service registration
             loop.run_until_complete(cls._start_scheduler())
 
             service_app = cls._make_app()
@@ -203,7 +203,7 @@ class Server:
     async def _stop(cls, loop):
         """Attempts to stop the server
 
-        If the _scheduler stops successfully, the event loop is
+        If the scheduler stops successfully, the event loop is
         stopped.
         """
 
@@ -212,7 +212,7 @@ class Server:
                 await cls.scheduler.stop()
                 cls.scheduler = None
             except TimeoutError:
-                _logger.exception('Unable to stop the _scheduler')
+                _logger.exception('Unable to stop the scheduler')
                 return
 
         # Cancel asyncio tasks

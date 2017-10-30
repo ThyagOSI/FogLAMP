@@ -154,7 +154,7 @@ def teardown_module():
 
 
 @pytest.allure.feature("unit")
-@pytest.allure.story("_scheduler get_tasks")
+@pytest.allure.story("scheduler get_tasks")
 class TestScheduler:
     @staticmethod
     async def drop_from_tasks():
@@ -771,7 +771,7 @@ class TestScheduler:
     @pytest.mark.asyncio
     async def test_get_tasks_all_parameters(self):
         """
-        A combination of all parameters allowed by _scheduler.get_tasks()
+        A combination of all parameters allowed by scheduler.get_tasks()
         :assert:
             1. The number of rows returned is equal to the limit of the subset of total_rows (based on the WHERE condition) - OFFSET
             2. process_name and integer value of task state are as correct

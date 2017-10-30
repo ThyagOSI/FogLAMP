@@ -89,7 +89,7 @@ def teardown_module():
 
 
 @pytest.allure.feature("unit")
-@pytest.allure.story("_scheduler")
+@pytest.allure.story("scheduler")
 class TestScheduler:
     _engine = None  # type: aiopg.sa.Engine
 
