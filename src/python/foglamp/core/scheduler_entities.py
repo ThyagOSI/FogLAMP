@@ -74,7 +74,7 @@ class ManualSchedule(Schedule):
 
 
 class StartUpSchedule(Schedule):
-    """A schedule that is run when the scheduler starts"""
+    """A schedule that is run when the _scheduler starts"""
 
     def __init__(self):
         super().__init__(self.Type.STARTUP)

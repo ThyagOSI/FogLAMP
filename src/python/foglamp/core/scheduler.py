@@ -133,13 +133,13 @@ class Scheduler(object):
 
         # Instance attributes
         self._ready = False
-        """True when the scheduler is ready to accept API calls"""
+        """True when the _scheduler is ready to accept API calls"""
         self._start_time = None  # type: int
-        """When the scheduler started"""
+        """When the _scheduler started"""
         self._max_running_tasks = None  # type: int
         """Maximum number of tasks that can execute at any given time"""
         self._paused = False
-        """When True, the scheduler will not start any new tasks"""
+        """When True, the _scheduler will not start any new tasks"""
         self._process_scripts = dict()
         """Dictionary of scheduled_processes.name to script"""
         self._schedules = dict()
@@ -269,7 +269,7 @@ class Scheduler(object):
         self._resume_check_schedules()
 
         # This must occur after all awaiting. The size of _task_processes
-        # is used by stop() to determine whether the scheduler can stop.
+        # is used by stop() to determine whether the _scheduler can stop.
         del self._task_processes[task_process.task_id]
 
     async def _start_task(self, schedule: _ScheduleRow) -> None:
@@ -404,7 +404,7 @@ class Scheduler(object):
         return earliest_start_time
 
     async def _scheduler_loop(self):
-        """Main loop for the scheduler"""
+        """Main loop for the _scheduler"""
         # TODO: log exception here or add an exception handler in asyncio
 
         while True:
@@ -679,7 +679,7 @@ class Scheduler(object):
             seconds=int(config['max_completed_task_age_days']['value']) * self._DAY_SECONDS)
 
     async def start(self):
-        """Starts the scheduler
+        """Starts the _scheduler
 
         When this method returns, an asyncio task is
         scheduled that starts tasks and monitors their subprocesses. This class
@@ -689,13 +689,13 @@ class Scheduler(object):
             NotReadyError: Scheduler was stopped
         """
         if self._paused or self._schedule_executions is None:
-            raise NotReadyError("The scheduler was stopped and can not be restarted")
+            raise NotReadyError("The _scheduler was stopped and can not be restarted")
 
         if self._ready:
             return
 
         if self._start_time:
-            raise NotReadyError("The scheduler is starting")
+            raise NotReadyError("The _scheduler is starting")
 
         self._logger.info("Starting")
 
@@ -735,7 +735,7 @@ class Scheduler(object):
         self._scheduler_loop_task = asyncio.ensure_future(self._scheduler_loop())
 
     async def stop(self):
-        """Attempts to stop the scheduler
+        """Attempts to stop the _scheduler
 
         Sends TERM signal to all running tasks. Does not wait for tasks to stop.
 
@@ -908,7 +908,7 @@ class Scheduler(object):
                 The id can be None, in which case a new id will be generated
 
         Raises:
-            NotReadyError: The scheduler is not ready for requests
+            NotReadyError: The _scheduler is not ready for requests
         """
         if self._paused or not self._ready:
             raise NotReadyError()
@@ -1026,7 +1026,7 @@ class Scheduler(object):
 
         Raises:
             SchedulePausedError:
-                The scheduler is stopping
+                The _scheduler is stopping
 
             ScheduleNotFoundError
         """

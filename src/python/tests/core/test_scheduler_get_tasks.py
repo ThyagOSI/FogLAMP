@@ -27,15 +27,22 @@ This is because when SORT isn't declared, the order in which rows are returned a
 
 import datetime
 import random
+import signal
 import time
 import uuid
-
+import os
+import sys
 import aiopg
+import asyncio
 import pytest
 import sqlalchemy
 import sqlalchemy.dialects.postgresql
 from foglamp.core.scheduler import Scheduler
-from foglamp.core.scheduler.scheduler_entities import Task
+from foglamp.core.scheduler_entities import Task
+from foglamp.storage.storage import Storage
+from foglamp.core.server import Server
+from foglamp.core.service_registry.instance import Service
+from foglamp.storage.exceptions import *
 
 __author__ = "Terris Linenbach, Amarendra K Sinha"
 __copyright__ = "Copyright (c) 2017 OSIsoft, LLC"
@@ -43,7 +50,6 @@ __license__ = "Apache 2.0"
 __version__ = "${VERSION}"
 
 _CONNECTION_STRING = "dbname='foglamp'"
-
 _TASKS_TABLE = sqlalchemy.Table('tasks', sqlalchemy.MetaData(),
                                        sqlalchemy.Column('id', sqlalchemy.dialects.postgresql.UUID, primary_key=True),
                                        sqlalchemy.Column('process_name', sqlalchemy.types.VARCHAR(20), default=''   ),
@@ -54,8 +60,101 @@ _TASKS_TABLE = sqlalchemy.Table('tasks', sqlalchemy.MetaData(),
                                        sqlalchemy.Column('exit_code', sqlalchemy.types.INT),
                                        sqlalchemy.Column('reason', sqlalchemy.types.VARCHAR(255)))
 
+_FOGLAMP_ROOT = os.getenv("FOGLAMP_ROOT", default='/home/foglamp/foglamp/FogLAMP')
+_STORAGE_DIR = os.path.expanduser(_FOGLAMP_ROOT + '/services/storage')
+
+"""
+    _is_management_started, _address, _host, _m_port, _app, _server_handler, _server, _scheduler are module level variables.
+
+    start_storage(), stop_storage() and start_management() are module level functions.
+
+    setup_module() and teardown_module() are module level setup and teardown methods but we are using teardown_module()
+    only.
+
+    setup has been moved into each individual test as start_management(), essential part of setup, is a coro and is
+    called by the event loop and setup_module() is never called by the event loop. Also, though setup has been defined
+    in each test, as we do not know the order of the execution of the tests, BUT is executed only once.
+"""
+
+_is_management_started = False
+_address = None
+_host = '0.0.0.0'
+_m_port = 0
+_app = None
+_server_handler = None
+_server = None
+_scheduler = None
+
+def start_storage(host, m_port):
+    try:
+        cmd_with_args = ['./storage', '--address={}'.format(host),
+                         '--port={}'.format(m_port)]
+        import subprocess
+        subprocess.call(cmd_with_args, cwd=_STORAGE_DIR)
+    except Exception as ex:
+        pass
+
+def stop_storage():
+    try:
+        Storage().shutdown()
+    except Exception as ex:
+        pass
+
+async def start_management():
+    global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server, _scheduler
+
+    loop = asyncio.get_event_loop()
+    _app = Server._make_core_app()
+    _server_handler = _app.make_handler()
+    coro = loop.create_server(_server_handler, _host, 0)
+    # added coroutine
+    _server = await coro
+    _address, _m_port = _server.sockets[0].getsockname()
+
+    start_storage(_address, _m_port)
+    _scheduler = Scheduler(_address, _m_port)
+
+    # make sure that it go forward only when storage service is ready
+    storage_service = None
+    attempts_left = 3
+
+    def handler(signum, frame):
+        if storage_service is None:
+            print("No Storage Service could be found, hence exiting...")
+            sys.exit(1)
+
+    signal.signal(signal.SIGALRM, handler)
+    signal.setitimer(signal.ITIMER_REAL, 30)
+
+    while attempts_left > 0 and storage_service is None:
+        try:
+            attempts_left -= 1
+            found_services = Service.Instances.get(name="FogLAMP Storage")
+            storage_service = found_services[0]
+        except (StorageServiceUnavailable, InvalidServiceInstance, Exception) as ex:
+            await asyncio.sleep(10)
+
+    # Everything OK, so now start Scheduler
+    print("Starting Scheduler; Management port received is ", _m_port)
+    print("Storage Service: ", storage_service)
+
+def setup_module():
+    pass
+
+def teardown_module():
+    global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server, _scheduler
+
+    # Stop Storage
+    stop_storage()
+    # Stop Management
+    loop = asyncio.get_event_loop()
+    _server.close()
+    loop.run_until_complete(_server.wait_closed())
+    loop.run_until_complete(_app.shutdown())
+
+
 @pytest.allure.feature("unit")
-@pytest.allure.story("scheduler get_tasks")
+@pytest.allure.story("_scheduler get_tasks")
 class TestScheduler:
     @staticmethod
     async def drop_from_tasks():
@@ -101,9 +200,7 @@ class TestScheduler:
         pass
 
     def teardown_method(self):
-        # TODO: Remove after merger of FOGL-517
-        s_id = Service.Instances.get()[0]
-        Service.Instances.unregister(s_id._id)
+        pass
 
     @pytest.mark.asyncio
     async def test_insert_error_tasks_table(self):
@@ -112,7 +209,11 @@ class TestScheduler:
         :assert:
             when state=0 and state=5 ValueError is called
         """
-        scheduler = Scheduler()
+        global _is_management_started, _scheduler
+        if not _is_management_started:
+            await start_management()
+            _is_management_started = True
+        
         stmt = """INSERT INTO tasks
                         (id, process_name, state, start_time, end_time, pid, exit_code, reason)
                     VALUES ('%s', '%s', %s, '%s', '%s', %s, %s, '');"""
@@ -131,7 +232,7 @@ class TestScheduler:
                 raise
 
             with pytest.raises(ValueError) as excinfo:
-                await scheduler.get_tasks()
+                await _scheduler.get_tasks()
             assert "not a valid State" in str(excinfo.value)
         await self.drop_from_tasks()
 
@@ -142,14 +243,18 @@ class TestScheduler:
         :assert:
             number of tasks returned is equal to the limit
         """
-        scheduler = Scheduler()
+        global _is_management_started, _scheduler
+        if not _is_management_started:
+            await start_management()
+            _is_management_started = True
+
         await self.drop_from_tasks()
         await self.insert_into_tasks()
 
         for limit in (1, 5, 25, 125, 250, 750, 1000):
-            tasks = await scheduler.get_tasks(limit=limit)
+            tasks = await _scheduler.get_tasks(limit=limit)
             assert len(tasks) == limit
-        tasks = await  scheduler.get_tasks()
+        tasks = await  _scheduler.get_tasks()
         assert len(tasks) == 100
 
         await self.drop_from_tasks()
@@ -161,13 +266,17 @@ class TestScheduler:
         :assert:
             the count(task) == total_rows - offset
         """
-        scheduler = Scheduler()
+        global _is_management_started, _scheduler
+        if not _is_management_started:
+            await start_management()
+            _is_management_started = True
+
         await self.drop_from_tasks()
         await self.insert_into_tasks(total_rows=100)
 
         for offset in (0, 1, 5, 10, 25, 50, 75, 100):
             # limit is required for offset
-            tasks = await scheduler.get_tasks(limit=100, offset=offset)
+            tasks = await _scheduler.get_tasks(limit=100, offset=offset)
             print(len(tasks))
             assert len(tasks) == 100 - offset
         # await  self.drop_from_tasks()
@@ -179,7 +288,11 @@ class TestScheduler:
         :assert:
             the number of rows returned is as expected
         """
-        scheduler = Scheduler()
+        global _is_management_started, _scheduler
+        if not _is_management_started:
+            await start_management()
+            _is_management_started = True
+
         await self.drop_from_tasks()
         await self.insert_into_tasks(total_rows=100)
 
@@ -195,20 +308,23 @@ class TestScheduler:
             except Exception:
                 print('Query failed: %s' % stmt)
                 raise
-            tasks = await scheduler.get_tasks(where=["state", "=", state])
+            tasks = await _scheduler.get_tasks(where=["state", "=", state])
             assert expect == len(tasks)
         await self.drop_from_tasks()
 
-    @pytest.mark.skip(reason="Blocked as multiple column sort support is not available in Storage layer")
     @pytest.mark.asyncio
     async def test_get_tasks_sorted(self):
         """
-        Check that sort variable of scheduler.get_tasks() works properlly
+        Check that sort variable of _scheduler.get_tasks() works properlly
         :assert:
             1. process_name and integer value of task state are as correct
             2. The expected INTEGER value correlate to the actual task state
         """
-        scheduler = Scheduler()
+        global _is_management_started, _scheduler
+        if not _is_management_started:
+            await start_management()
+            _is_management_started = True
+
         await self.drop_from_tasks()
         await self.insert_into_tasks(total_rows=100)
 
@@ -224,7 +340,7 @@ class TestScheduler:
             print('Query failed: %s' % stmt)
             raise
 
-        tasks = await scheduler.get_tasks(sort=(["state", "desc"], ["process_name", "desc"]))
+        tasks = await _scheduler.get_tasks(sort=(["state", "desc"], ["process_name", "desc"]))
 
         assert len(tasks) == len(expect) # verify that the same number of rows are returned
         for i in range(len(expect)):
@@ -247,7 +363,11 @@ class TestScheduler:
         :assert:
             The number of rows returned is equal to the limit of total_rows - offset
         """
-        scheduler = Scheduler()
+        global _is_management_started, _scheduler
+        if not _is_management_started:
+            await start_management()
+            _is_management_started = True
+
         await self.drop_from_tasks()
         await self.insert_into_tasks()
 
@@ -263,7 +383,7 @@ class TestScheduler:
                 except Exception:
                     print('Query failed: %s' % stmt)
                     raise
-                tasks = await scheduler.get_tasks(limit=limit, offset=offset)
+                tasks = await _scheduler.get_tasks(limit=limit, offset=offset)
                 assert len(tasks) == len(expect)
 
     @pytest.mark.asyncio
@@ -273,7 +393,11 @@ class TestScheduler:
         :assert:
             The number of rows returned is equal to the limit of the WHERE condition
         """
-        scheduler = Scheduler()
+        global _is_management_started, _scheduler
+        if not _is_management_started:
+            await start_management()
+            _is_management_started = True
+
         await self.drop_from_tasks()
         await self.insert_into_tasks()
 
@@ -292,12 +416,11 @@ class TestScheduler:
                     print('Query failed: %s' % stmt)
                     raise
 
-                tasks = await scheduler.get_tasks(limit=limit, where=["state", "=", state])
+                tasks = await _scheduler.get_tasks(limit=limit, where=["state", "=", state])
                 assert len(expect) == len(tasks)
 
         await self.drop_from_tasks()
 
-    @pytest.mark.skip(reason="Blocked as multiple column sort support is not available in Storage layer")
     @pytest.mark.asyncio
     async def test_get_tasks_limit_sorted(self):
         """
@@ -307,7 +430,11 @@ class TestScheduler:
             2. The value per process_name and state is as expected
             3. The numerical value of expected state is correlated to the proper name of the task.state
         """
-        scheduler = Scheduler()
+        global _is_management_started, _scheduler
+        if not _is_management_started:
+            await start_management()
+            _is_management_started = True
+
         await self.drop_from_tasks()
         await self.insert_into_tasks()
         for limit in (1, 5, 25, 125, 250, 750, 1000):
@@ -323,7 +450,7 @@ class TestScheduler:
                 print('Query failed: %s' % stmt)
                 raise
 
-            tasks = await scheduler.get_tasks(limit=limit, sort=(["state", "desc"], ["process_name", "desc"]))
+            tasks = await _scheduler.get_tasks(limit=limit, sort=(["state", "desc"], ["process_name", "desc"]))
 
             assert len(tasks) == len(expect) and len(tasks) == limit  # verify that the same number of rows are returned
             for i in range(len(expect)):
@@ -346,7 +473,11 @@ class TestScheduler:
         :assert:
             The number of rows returned is equal to the WHERE condition of total_rows - OFFSET
         """
-        scheduler = Scheduler()
+        global _is_management_started, _scheduler
+        if not _is_management_started:
+            await start_management()
+            _is_management_started = True
+
         await self.drop_from_tasks()
         await self.insert_into_tasks(total_rows=100)
 
@@ -364,12 +495,11 @@ class TestScheduler:
                     print('Query failed: %s' % stmt)
                     raise
 
-                tasks = await scheduler.get_tasks(offset=offset, where=["state", "=", state])
+                tasks = await _scheduler.get_tasks(offset=offset, where=["state", "=", state])
                 assert len(expect) == len(tasks)
 
         await self.drop_from_tasks()
 
-    @pytest.mark.skip(reason="Blocked as multiple column sort support is not available in Storage layer")
     @pytest.mark.asyncio
     async def test_get_tasks_offset_sorted(self):
         """
@@ -380,7 +510,11 @@ class TestScheduler:
             3. The numerical value of expected state is correlated to the proper name of the task.state
         """
         total_rows = 100
-        scheduler = Scheduler()
+        global _is_management_started, _scheduler
+        if not _is_management_started:
+            await start_management()
+            _is_management_started = True
+
         await self.drop_from_tasks()
         await self.insert_into_tasks(total_rows=total_rows)
 
@@ -397,7 +531,7 @@ class TestScheduler:
                 print('Query failed: %s' % stmt)
                 raise
 
-            tasks = await scheduler.get_tasks(limit=100, offset=offset,sort=(["state", "desc"], ["process_name", "desc"]))
+            tasks = await _scheduler.get_tasks(limit=100, offset=offset, sort=(["state", "desc"], ["process_name", "desc"]))
 
             assert len(tasks) == len(expect)  and len(tasks) == total_rows - offset # verify that the same number of rows are returned
             for i in range(len(expect)):
@@ -413,8 +547,6 @@ class TestScheduler:
                     assert tasks[i].state == Task.State.INTERRUPTED
         await self.drop_from_tasks()
 
-
-    @pytest.mark.skip(reason="Blocked as multiple column sort support is not available in Storage layer")
     @pytest.mark.asyncio
     async def test_get_tasks_where_sorted(self):
         """
@@ -423,7 +555,11 @@ class TestScheduler:
             1. process_name and integer value of task state are as correct
             2. The expected INTEGER value correlate to the actual task state
         """
-        scheduler = Scheduler()
+        global _is_management_started, _scheduler
+        if not _is_management_started:
+            await start_management()
+            _is_management_started = True
+
         await self.drop_from_tasks()
         await self.insert_into_tasks(total_rows=100)
 
@@ -441,7 +577,7 @@ class TestScheduler:
                 print('Query failed: %s' % stmt)
                 raise
 
-            tasks = await scheduler.get_tasks(where=["state", "=", state], sort=(["state", "desc"], ["process_name", "desc"]))
+            tasks = await _scheduler.get_tasks(where=["state", "=", state], sort=(["state", "desc"], ["process_name", "desc"]))
 
             for i in range(len(expect)):
                 assert tasks[i].process_name == expect[i][0]
@@ -463,7 +599,11 @@ class TestScheduler:
         :assert:
             The number of tasks is equal to the limit of the total_rows returned based on the WHERE condition - OFFSET
         """
-        scheduler = Scheduler()
+        global _is_management_started, _scheduler
+        if not _is_management_started:
+            await start_management()
+            _is_management_started = True
+
         await self.drop_from_tasks()
         await self.insert_into_tasks()
 
@@ -482,12 +622,11 @@ class TestScheduler:
                         print('Query failed: %s' % stmt)
                         raise
 
-                    tasks = await scheduler.get_tasks(limit=limit, offset=offset, where=["state", "=", state])
+                    tasks = await _scheduler.get_tasks(limit=limit, offset=offset, where=["state", "=", state])
                     assert len(expect) == len(tasks)
 
         await self.drop_from_tasks()
 
-    @pytest.mark.skip(reason="Blocked as multiple column sort support is not available in Storage layer")
     @pytest.mark.asyncio
     async def test_get_tasks_limit_offset_sorted(self):
         """
@@ -497,7 +636,11 @@ class TestScheduler:
             2. process_name and integer value of task state are as correct
             3. The expected INTEGER value correlate to the actual task state
         """
-        scheduler = Scheduler()
+        global _is_management_started, _scheduler
+        if not _is_management_started:
+            await start_management()
+            _is_management_started = True
+
         await self.drop_from_tasks()
         await self.insert_into_tasks()
 
@@ -516,8 +659,8 @@ class TestScheduler:
                     print('Query failed: %s' % stmt)
                     raise
 
-                tasks = await scheduler.get_tasks(limit=limit, offset=offset,
-                                                  sort=(["state", "desc"], ["process_name", "desc"]))
+                tasks = await _scheduler.get_tasks(limit=limit, offset=offset,
+                                                   sort=(["state", "desc"], ["process_name", "desc"]))
 
                 assert len(tasks) == len(expect)  # verify that the same number of rows are returned
                 for i in range(len(expect)):
@@ -533,7 +676,6 @@ class TestScheduler:
                         assert tasks[i].state == Task.State.INTERRUPTED
         await self.drop_from_tasks()
 
-    @pytest.mark.skip(reason="Blocked as multiple column sort support is not available in Storage layer")
     @pytest.mark.asyncio
     async def test_get_tasks_limit_where_sorted(self):
         """
@@ -543,7 +685,11 @@ class TestScheduler:
             2. process_name and integer value of task state are as correct
             3. The expected INTEGER value correlate to the actual task state
         """
-        scheduler = Scheduler()
+        global _is_management_started, _scheduler
+        if not _is_management_started:
+            await start_management()
+            _is_management_started = True
+
         await self.drop_from_tasks()
         await self.insert_into_tasks()
 
@@ -563,8 +709,8 @@ class TestScheduler:
                     print('Query failed: %s' % stmt)
                     raise
 
-                tasks = await scheduler.get_tasks(limit=limit, where=["state", "=", state],
-                                                    sort = (["state", "desc"], ["process_name", "desc"]))
+                tasks = await _scheduler.get_tasks(limit=limit, where=["state", "=", state],
+                                                   sort = (["state", "desc"], ["process_name", "desc"]))
 
                 for i in range(len(expect)):
                     assert tasks[i].process_name == expect[i][0]
@@ -573,7 +719,6 @@ class TestScheduler:
         await self.drop_from_tasks()
 
 
-    @pytest.mark.skip(reason="Blocked as multiple column sort support is not available in Storage layer")
     @pytest.mark.asyncio
     async def test_get_tasks_offset_where_sorted(self):
         """
@@ -583,7 +728,11 @@ class TestScheduler:
             2. process_name and integer value of task state are as correct
             3. The expected INTEGER value correlate to the actual task state
         """
-        scheduler = Scheduler()
+        global _is_management_started, _scheduler
+        if not _is_management_started:
+            await start_management()
+            _is_management_started = True
+
         await self.drop_from_tasks()
         await self.insert_into_tasks(total_rows=100)
 
@@ -603,8 +752,8 @@ class TestScheduler:
                     print('Query failed: %s' % stmt)
                     raise
 
-                tasks = await scheduler.get_tasks(offset=offset, where=["state", "=", state],
-                                                sort = (["state", "desc"], ["process_name", "desc"]))
+                tasks = await _scheduler.get_tasks(offset=offset, where=["state", "=", state],
+                                                   sort = (["state", "desc"], ["process_name", "desc"]))
 
                 for i in range(len(expect)):
                     assert tasks[i].process_name == expect[i][0]
@@ -619,17 +768,20 @@ class TestScheduler:
                         assert tasks[i].state == Task.State.INTERRUPTED
         await self.drop_from_tasks()
 
-    @pytest.mark.skip(reason="Blocked as multiple column sort support is not available in Storage layer")
     @pytest.mark.asyncio
     async def test_get_tasks_all_parameters(self):
         """
-        A combination of all parameters allowed by scheduler.get_tasks()
+        A combination of all parameters allowed by _scheduler.get_tasks()
         :assert:
             1. The number of rows returned is equal to the limit of the subset of total_rows (based on the WHERE condition) - OFFSET
             2. process_name and integer value of task state are as correct
             3. The expected INTEGER value correlate to the actual task state
         """
-        scheduler = Scheduler()
+        global _is_management_started, _scheduler
+        if not _is_management_started:
+            await start_management()
+            _is_management_started = True
+
         await self.drop_from_tasks()
         await self.insert_into_tasks()
         for limit in (1, 5, 25, 125, 250, 750, 1000):
@@ -649,9 +801,9 @@ class TestScheduler:
                         print('Query failed: %s' % stmt)
                         raise
 
-                    tasks = await scheduler.get_tasks(offset=offset, limit=limit,
-                                                      where=["state", "=", state],
-                                                      sort=(["state", "desc"], ["process_name", "desc"]))
+                    tasks = await _scheduler.get_tasks(offset=offset, limit=limit,
+                                                       where=["state", "=", state],
+                                                       sort=(["state", "desc"], ["process_name", "desc"]))
 
                     assert len(tasks) == len(expect)
                     for i in range(len(expect)):

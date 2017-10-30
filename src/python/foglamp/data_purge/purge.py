@@ -16,7 +16,7 @@ Description: Based on FOGL-200 (https://docs.google.com/document/d/1GdMTerNq_-XQ
      As for the database layer, the code currently uses SQLAlchemy, but can easily be switched out to use some other 
     tool to communicate with the database. 
     
-     Once the purge process is called by the scheduler, it does the following: 
+     Once the purge process is called by the _scheduler, it does the following:
      1. Connects to the database 
      2. Retrieve information from the Configuration, and last ID sent to the historian
      3. Calculates how many rows are in the database to this point (using "NOW()") 

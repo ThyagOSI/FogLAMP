@@ -211,7 +211,7 @@ async def _execute_add_update_schedule(data, curr_value=None):
     elif _schedule.get('schedule_type') == Schedule.Type.MANUAL:
         schedule = ManualSchedule()
 
-    # Populate scheduler object
+    # Populate _scheduler object
     schedule.schedule_id = _schedule.get('schedule_id')
     schedule.name = _schedule.get('schedule_name')
     schedule.process_name = _schedule.get('schedule_process_name')

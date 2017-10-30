@@ -16,6 +16,7 @@ from foglamp.core.server import Server
 from foglamp.core.scheduler import Scheduler
 from foglamp.core.scheduler_entities import IntervalSchedule, Task, Schedule, TimedSchedule, ManualSchedule, StartUpSchedule
 from foglamp.core.scheduler_exceptions import ScheduleNotFoundError
+from foglamp.storage.storage import Storage
 
 __author__ = "Terris Linenbach, Amarendra K Sinha"
 __copyright__ = "Copyright (c) 2017 OSIsoft, LLC"
@@ -26,31 +27,72 @@ _CONNECTION_STRING = "dbname='foglamp' user='foglamp'"
 _FOGLAMP_ROOT = os.getenv("FOGLAMP_ROOT", default='/home/foglamp/foglamp/FogLAMP')
 _STORAGE_DIR = os.path.expanduser(_FOGLAMP_ROOT + '/services/storage')
 
+"""
+    _is_management_started, _address, _host, _m_port, _app, _server_handler, _server are module level variables.
 
-@pytest.allure.feature("unit")
-@pytest.allure.story("scheduler")
-class TestScheduler:
-    _engine = None  # type: aiopg.sa.Engine
-    _is_management_started = False
-    _address = None
-    _host = '0.0.0.0'
-    _m_port = 0
-    _app = None
-    _server_handler = None
-    _server = None
+    start_storage(), stop_storage() and start_management() are module level functions.
 
-    @classmethod
-    def setup_class(cls):
+    setup_module() and teardown_module() are module level setup and teardown methods but we are using teardown_module()
+    only.
+
+    setup has been moved into each individual test as start_management(), essential part of setup, is a coro and is
+    called by the event loop and setup_module() is never called by the event loop. Also, though setup has been defined
+    in each test, as we do not know the order of the execution of the tests, BUT is executed only once.
+"""
+
+_is_management_started = False
+_address = None
+_host = '0.0.0.0'
+_m_port = 0
+_app = None
+_server_handler = None
+_server = None
+
+def start_storage(host, m_port):
+    try:
+        cmd_with_args = ['./storage', '--address={}'.format(host),
+                         '--port={}'.format(m_port)]
+        import subprocess
+        subprocess.call(cmd_with_args, cwd=_STORAGE_DIR)
+    except Exception as ex:
         pass
 
-    @classmethod
-    def teardown_class(cls):
-        loop = asyncio.get_event_loop()
-        TestScheduler._server.close()
-        loop.run_until_complete(TestScheduler._server.wait_closed())
-        loop.run_until_complete(TestScheduler._app.shutdown())
-        loop.run_until_complete(TestScheduler.__server_handler.shutdown(60.0))
-        loop.run_until_complete(TestScheduler._app.cleanup())
+def stop_storage():
+    try:
+        Storage().shutdown()
+    except Exception as ex:
+        pass
+
+async def start_management():
+    global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
+
+    loop = asyncio.get_event_loop()
+    _app = Server._make_core_app()
+    _server_handler = _app.make_handler()
+    coro = loop.create_server(_server_handler, _host, 0)
+    # added coroutine
+    _server = await coro
+    _address, _m_port = _server.sockets[0].getsockname()
+
+def setup_module():
+    pass
+
+def teardown_module():
+    global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
+
+    # Stop Storage
+    stop_storage()
+    # Stop Management
+    loop = asyncio.get_event_loop()
+    _server.close()
+    loop.run_until_complete(_server.wait_closed())
+    loop.run_until_complete(_app.shutdown())
+
+
+@pytest.allure.feature("unit")
+@pytest.allure.story("_scheduler")
+class TestScheduler:
+    _engine = None  # type: aiopg.sa.Engine
 
     async def _get_connection_pool(self) -> aiopg.sa.Engine:
         """Returns a database connection pool object"""
@@ -88,39 +130,19 @@ class TestScheduler:
             except TimeoutError:
                 await asyncio.sleep(1)
 
-    @staticmethod
-    async def start_management(host, m_port):
-        loop = asyncio.get_event_loop()
-        app = Server._make_core_app()
-        server_handler = app.make_handler()
-        coro = loop.create_server(server_handler, host, m_port)
-        # added coroutine
-        server = await coro
-        address, port = server.sockets[0].getsockname()
-        return app, server_handler, server, address, port
-
-    @staticmethod
-    def start_storage(host, m_port):
-        try:
-            cmd_with_args = ['./storage', '--address={}'.format(host),
-                             '--port={}'.format(m_port)]
-            import subprocess
-            subprocess.call(cmd_with_args, cwd=_STORAGE_DIR)
-        except Exception as ex:
-            pass
-
     @pytest.mark.asyncio
     async def test_stop(self):
         """Test that stop_scheduler actually works"""
+        global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
+
         await self.populate_test_data()  # Populate data in foglamp.scheduled_processes
 
-        # TODO: Put below in setup_class?
-        if not self._is_management_started:
-            self._app, self._server_handler, self._server, self._address, self._m_port = await self.start_management(self._host, 0)
-            self.start_storage(self._address, self._m_port)
-            self._is_management_started = True
+        if not _is_management_started:
+            await start_management()
+            start_storage(_address, _m_port)
+            _is_management_started = True
 
-        scheduler = Scheduler(self._address, self._m_port)
+        scheduler = Scheduler(_address, _m_port)
         await scheduler.start()
 
         # Set schedule interval
@@ -141,9 +163,16 @@ class TestScheduler:
         :assert:
             A task starts immediately and doesn't repeat
         """
-        scheduler = Scheduler()
+        global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
 
         await self.populate_test_data()  # Populate data in foglamp.scheduled_processes
+
+        if not _is_management_started:
+            await start_management()
+            start_storage(_address, _m_port)
+            _is_management_started = True
+
+        scheduler = Scheduler(_address, _m_port)
         await scheduler.start()
 
         # assert that the schedule type is interval
@@ -174,9 +203,16 @@ class TestScheduler:
         :assert:
             The interval type of the schedule
         """
-        scheduler = Scheduler()
+        global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
 
         await self.populate_test_data()  # Populate data in foglamp.scheduled_processes
+
+        if not _is_management_started:
+            await start_management()
+            start_storage(_address, _m_port)
+            _is_management_started = True
+
+        scheduler = Scheduler(_address, _m_port)
         await scheduler.start()
 
         # assert that the schedule type is interval
@@ -195,9 +231,16 @@ class TestScheduler:
     async def test_modify_schedule_type(self):
         """Test modifying the type of a schedule
         """
-        scheduler = Scheduler()
+        global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
 
-        await self.populate_test_data()
+        await self.populate_test_data()  # Populate data in foglamp.scheduled_processes
+
+        if not _is_management_started:
+            await start_management()
+            start_storage(_address, _m_port)
+            _is_management_started = True
+
+        scheduler = Scheduler(_address, _m_port)
         await scheduler.start()
 
         interval_schedule = IntervalSchedule()
@@ -229,9 +272,16 @@ class TestScheduler:
             the number of tasks running
             information regarding the process running
         """
-        scheduler = Scheduler()
+        global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
 
-        await self.populate_test_data()
+        await self.populate_test_data()  # Populate data in foglamp.scheduled_processes
+
+        if not _is_management_started:
+            await start_management()
+            start_storage(_address, _m_port)
+            _is_management_started = True
+
+        scheduler = Scheduler(_address, _m_port)
         await scheduler.start()
 
         interval_schedule = IntervalSchedule()
@@ -239,7 +289,7 @@ class TestScheduler:
         interval_schedule.process_name = "sleep10"
         interval_schedule.repeat = datetime.timedelta(seconds=0)
 
-        await scheduler.save_schedule(interval_schedule)  # Save update on scheduler
+        await scheduler.save_schedule(interval_schedule)  # Save update on _scheduler
 
         await asyncio.sleep(1)
         # Assert only 1 task is running
@@ -251,7 +301,7 @@ class TestScheduler:
         interval_schedule.process_name = "sleep1"
         interval_schedule.repeat = datetime.timedelta(seconds=5)  # Set time interval to 5 sec
 
-        await scheduler.save_schedule(interval_schedule)  # Save update on scheduler
+        await scheduler.save_schedule(interval_schedule)  # Save update on _scheduler
         await asyncio.sleep(6)
 
         # Assert: only 1 task is running
@@ -279,17 +329,24 @@ class TestScheduler:
 
     @pytest.mark.asyncio
     async def test_startup_schedule(self):
-        """Test startup of scheduler
+        """Test startup of _scheduler
         :assert:
             the number of running tasks
         """
-        scheduler = Scheduler()
+        global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
 
         await self.populate_test_data()  # Populate data in foglamp.scheduled_processes
-        await scheduler.start()  # Start scheduler
+
+        if not _is_management_started:
+            await start_management()
+            start_storage(_address, _m_port)
+            _is_management_started = True
+
+        scheduler = Scheduler(_address, _m_port)
+        await scheduler.start()
 
         # Declare schedule startup, and execute
-        startup_schedule = StartUpSchedule()  # A scheduled process of the scheduler
+        startup_schedule = StartUpSchedule()  # A scheduled process of the _scheduler
         startup_schedule.name = 'startup schedule'
         startup_schedule.process_name = 'sleep30'
         startup_schedule.repeat = datetime.timedelta(seconds=0)  # set no repeat to startup
@@ -338,9 +395,16 @@ class TestScheduler:
         :assert:
             The number of running processes
         """
-        scheduler = Scheduler()
+        global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
 
-        await self.populate_test_data()
+        await self.populate_test_data()  # Populate data in foglamp.scheduled_processes
+
+        if not _is_management_started:
+            await start_management()
+            start_storage(_address, _m_port)
+            _is_management_started = True
+
+        scheduler = Scheduler(_address, _m_port)
         await scheduler.start()
 
         # Declare manual interval schedule
@@ -352,7 +416,7 @@ class TestScheduler:
         await scheduler.save_schedule(manual_schedule)
         manual_schedule = await scheduler.get_schedule(manual_schedule.schedule_id)
 
-        await scheduler.queue_task(manual_schedule.schedule_id)  # Added a task to the scheduler queue
+        await scheduler.queue_task(manual_schedule.schedule_id)  # Added a task to the _scheduler queue
         await asyncio.sleep(5)
 
         tasks = await scheduler.get_running_tasks()
@@ -366,9 +430,16 @@ class TestScheduler:
         :assert:
             the number of running processes
         """
-        scheduler = Scheduler()
+        global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
 
-        await self.populate_test_data()
+        await self.populate_test_data()  # Populate data in foglamp.scheduled_processes
+
+        if not _is_management_started:
+            await start_management()
+            start_storage(_address, _m_port)
+            _is_management_started = True
+
+        scheduler = Scheduler(_address, _m_port)
         await scheduler.start()
 
         # 2 maximum tasks
@@ -421,9 +492,16 @@ class TestScheduler:
             Number of running tasks
             The values declared at for timestamp
         """
-        scheduler = Scheduler()
+        global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
 
-        await self.populate_test_data()
+        await self.populate_test_data()  # Populate data in foglamp.scheduled_processes
+
+        if not _is_management_started:
+            await start_management()
+            start_storage(_address, _m_port)
+            _is_management_started = True
+
+        scheduler = Scheduler(_address, _m_port)
         await scheduler.start()
 
         timed_schedule = TimedSchedule()
@@ -468,9 +546,16 @@ class TestScheduler:
         :assert:
             scheduled task gets removed
         """
-        scheduler = Scheduler()
+        global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
 
-        await self.populate_test_data()
+        await self.populate_test_data()  # Populate data in foglamp.scheduled_processes
+
+        if not _is_management_started:
+            await start_management()
+            start_storage(_address, _m_port)
+            _is_management_started = True
+
+        scheduler = Scheduler(_address, _m_port)
         await scheduler.start()
 
         # Set schedule to be interval based
@@ -498,9 +583,16 @@ class TestScheduler:
     @pytest.mark.asyncio
     async def test_cancel(self):
         """Cancel a running process"""
-        scheduler = Scheduler()
+        global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
 
-        await self.populate_test_data()
+        await self.populate_test_data()  # Populate data in foglamp.scheduled_processes
+
+        if not _is_management_started:
+            await start_management()
+            start_storage(_address, _m_port)
+            _is_management_started = True
+
+        scheduler = Scheduler(_address, _m_port)
         await scheduler.start()
 
         interval_schedule = IntervalSchedule()
@@ -522,9 +614,16 @@ class TestScheduler:
         """Schedule gets retrieved
         :assert:
             Schedule is retrieved by id """
-        scheduler = Scheduler()
+        global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
 
-        await self.populate_test_data()
+        await self.populate_test_data()  # Populate data in foglamp.scheduled_processes
+
+        if not _is_management_started:
+            await start_management()
+            start_storage(_address, _m_port)
+            _is_management_started = True
+
+        scheduler = Scheduler(_address, _m_port)
         await scheduler.start()
 
         # Declare schedule
@@ -556,9 +655,16 @@ class TestScheduler:
         :assert:
             there exists a task
         """
-        scheduler = Scheduler()
+        global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
 
-        await self.populate_test_data()
+        await self.populate_test_data()  # Populate data in foglamp.scheduled_processes
+
+        if not _is_management_started:
+            await start_management()
+            start_storage(_address, _m_port)
+            _is_management_started = True
+
+        scheduler = Scheduler(_address, _m_port)
         await scheduler.start()
 
         interval_schedule = IntervalSchedule()
@@ -586,12 +692,19 @@ class TestScheduler:
             The state of tasks
             the start time of a given task
         """
-        scheduler = Scheduler()
+        global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
 
-        await self.populate_test_data()
+        await self.populate_test_data()  # Populate data in foglamp.scheduled_processes
+
+        if not _is_management_started:
+            await start_management()
+            start_storage(_address, _m_port)
+            _is_management_started = True
+
+        scheduler = Scheduler(_address, _m_port)
         await scheduler.start()
 
-        # declare scheduler task
+        # declare _scheduler task
         interval_schedule = IntervalSchedule()
         interval_schedule.name = 'get_tasks'
         interval_schedule.process_name = "sleep5"
@@ -632,11 +745,11 @@ class TestScheduler:
             sort=[["state", "desc"], ["start_time", "asc"]])
         assert tasks
 
-        tasks = await scheduler.get_tasks(or_where_list=[["state", "=", int(Task.State.RUNNING)],
+        tasks = await scheduler.get_tasks(or_where_list=[["state", "=", int(Task.State.RUNNING)], \
                                                          ["state", "=", int(Task.State.RUNNING)]])
         assert tasks
 
-        tasks = await scheduler.get_tasks(and_where_list=[["state", "=", int(Task.State.RUNNING)],
+        tasks = await scheduler.get_tasks(and_where_list=[["state", "=", int(Task.State.RUNNING)], \
                                                           ["state", "=", int(Task.State.RUNNING)]])
         assert tasks
 
@@ -644,9 +757,16 @@ class TestScheduler:
 
     @pytest.mark.asyncio
     async def test_purge_tasks(self):
-        scheduler = Scheduler()
+        global _is_management_started, _address, _host, _m_port, _app, _server_handler, _server
 
-        await self.populate_test_data()
+        await self.populate_test_data()  # Populate data in foglamp.scheduled_processes
+
+        if not _is_management_started:
+            await start_management()
+            start_storage(_address, _m_port)
+            _is_management_started = True
+
+        scheduler = Scheduler(_address, _m_port)
         await scheduler.start()
 
         interval_schedule = IntervalSchedule()
