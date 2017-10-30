@@ -87,9 +87,6 @@ class Server:
 
     @classmethod
     async def _start_storage(cls, loop):
-        # TODO: FOGL-654 simplify start storage
-        # instead of callback use asyncio subprocess shell executor
-
         if loop is None:
             loop = asyncio.get_event_loop()
             # callback with args
