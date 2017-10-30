@@ -9,7 +9,6 @@ import asyncpg
 import requests
 import pytest
 import asyncio
-
 import time
 
 __author__ = "Amarendra K Sinha"

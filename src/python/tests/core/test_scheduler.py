@@ -9,13 +9,12 @@ import datetime
 import os
 import time
 import uuid
-
 import aiopg
 import pytest
+from foglamp.core.scheduler.scheduler import Scheduler
+from foglamp.core.scheduler.entities import IntervalSchedule, Task, Schedule, TimedSchedule, ManualSchedule, StartUpSchedule
+from foglamp.core.scheduler.exceptions import ScheduleNotFoundError
 from foglamp.core.server import Server
-from foglamp.core.scheduler import Scheduler
-from foglamp.core.scheduler_entities import IntervalSchedule, Task, Schedule, TimedSchedule, ManualSchedule, StartUpSchedule
-from foglamp.core.scheduler_exceptions import ScheduleNotFoundError
 from foglamp.storage.storage import Storage
 
 __author__ = "Terris Linenbach, Amarendra K Sinha"

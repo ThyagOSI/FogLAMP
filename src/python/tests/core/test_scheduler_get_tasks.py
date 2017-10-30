@@ -25,24 +25,24 @@ This is because when SORT isn't declared, the order in which rows are returned a
 14. LIMIT  + OFFSET + WHERE + SORT
 """
 
+import asyncio
 import datetime
+import os
 import random
 import signal
+import sys
 import time
 import uuid
-import os
-import sys
 import aiopg
-import asyncio
 import pytest
 import sqlalchemy
 import sqlalchemy.dialects.postgresql
-from foglamp.core.scheduler import Scheduler
-from foglamp.core.scheduler_entities import Task
-from foglamp.storage.storage import Storage
+from foglamp.core.scheduler.scheduler import Scheduler
+from foglamp.core.scheduler.entities import Task
 from foglamp.core.server import Server
 from foglamp.core.service_registry.instance import Service
 from foglamp.storage.exceptions import *
+from foglamp.storage.storage import Storage
 
 __author__ = "Terris Linenbach, Amarendra K Sinha"
 __copyright__ = "Copyright (c) 2017 OSIsoft, LLC"

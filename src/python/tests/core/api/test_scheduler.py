@@ -6,12 +6,13 @@
 
 import asyncio
 import json
+import time
 import uuid
 import asyncpg
 import pytest
 import requests
-import time
-from foglamp.core.scheduler_entities import Schedule
+
+from foglamp.core.scheduler.entities import Schedule
 
 __author__ = "Amarendra K Sinha"
 __copyright__ = "Copyright (c) 2017 OSIsoft, LLC"

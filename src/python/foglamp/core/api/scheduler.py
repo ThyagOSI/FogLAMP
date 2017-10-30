@@ -7,12 +7,11 @@
 import datetime
 import re
 import uuid
-
 from aiohttp import web
 from foglamp.core import server
 from foglamp.core.api import scheduler_db_services
-from foglamp.core.scheduler_exceptions import TaskNotFoundError, ScheduleNotFoundError
-from foglamp.core.scheduler_entities import Schedule, StartUpSchedule, TimedSchedule, IntervalSchedule, ManualSchedule, Task
+from foglamp.core.scheduler.entities import Schedule, StartUpSchedule, TimedSchedule, IntervalSchedule, ManualSchedule, Task
+from foglamp.core.scheduler.exceptions import TaskNotFoundError, ScheduleNotFoundError
 
 __author__ = "Amarendra K. Sinha"
 __copyright__ = "Copyright (c) 2017 OSIsoft, LLC"

@@ -16,7 +16,7 @@ from aiohttp import web
 from foglamp import logger
 from foglamp.core import middleware
 from foglamp.core import routes
-from foglamp.core.scheduler import Scheduler
+from foglamp.core.scheduler.scheduler import Scheduler
 from foglamp.core.service_registry.instance import Service
 from foglamp.storage.storage import Storage
 
